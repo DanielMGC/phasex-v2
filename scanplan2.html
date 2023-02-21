@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<title>Do Your Scan Plan</title>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+	<script src="js/jquery-3.6.3.min.js"></script>
+	<script src="js/jquery-ui/jquery-ui.js"></script>
+	<link type="text/css" rel="stylesheet" href="css/main.css">
+	<link type="text/css" rel="stylesheet" href="css/scanplan.css">
+	<link href="js/jquery-ui/jquery-ui.css" rel="stylesheet">
+
+</head>
+	<body>
+
+		<div id="container">
+			<div id="divThree" class="box">
+				<div id="div2d"></div>
+				<div id="div3d"></div>
+			</div>
+			<div id="divOverlay2d">
+				Side view
+			</div>
+			<div id="divOverlay3d">
+				<button id="btnTop" onclick="moveCamera('top');">Top</button>
+				<button id="btnSide" onclick="moveCamera('side');">Side</button>
+				<button id="btnFront" onclick="moveCamera('front');">Front</button>
+			</div>
+		</div>
+
+
+		<script type="text/javascript" src="node_modules/dat.gui/build/dat.gui.js"></script>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "./three/build/three.module.js",
+					"three/addons/": "./three/examples/jsm/",
+					"dat.gui": "./node_modules/dat.gui/build/dat.gui.js"
+				}
+			}
+		</script>
+
+
+		<script type="module">
+
+			import * as THREE from 'three';
+
+			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+            let s2di = 0;
+			let s3di = 1;
+
+			let containers = [null, null];
+
+            let cameras = [null, null];
+
+            let renderers = [null, null];
+
+			let scenes = [null, null];
+
+            var controls3d;
+
+			let scanArea1, scanLine1, scanArea2, scanLine2;
+
+			let config;
+
+			let relWidth = 10.0
+
+			let params = {};
+
+			let probes = [
+				{
+					groups: [new THREE.Group(), new THREE.Group()],
+					indexOffset: 0,
+					scanOffset: 0,
+					skew: 90
+				},
+                {
+                    groups: [new THREE.Group(), new THREE.Group()],
+                    indexOffset: 0,
+                    scanOffset: 0,
+                    skew: 270
+                }
+			];
+			let partInfo = {
+				width: 300,
+				length: 200,
+				height: 28
+			};
+
+			var partSceneInfo = {};
+
+			let probeInfo = {
+				angle: toRadians(36.1),
+				angle2: 0,
+				L: 72.99,
+                H: 44.7,
+                W: 46,
+				X: 70.26,
+				Z: 17.23,
+				sH: 0,
+				sW: 0
+			};
+
+			let probeSceneInfo = {};
+
+			var gui;
+
+			var probeHtmlElement;
+
+			var guiFields = [];
+			
+			init();
+
+			$("#btnTop").button({
+                icon: "ui-icon-arrowthickstop-1-s"
+			});
+            $("#btnFront").button({
+                icon: "ui-icon-arrowthickstop-1-w"
+			});
+            $("#btnSide").button({
+                icon: "ui-icon-arrowthickstop-1-n"
+			});
+
+			function toSceneUnits(realValue) {
+				return (realValue * relWidth) / partInfo.width;
+			}
+
+			function toRadians(degrees) {
+				return degrees * (Math.PI / 180);
+			}
+
+			function loadGui() {
+				gui = new dat.gui.GUI();
+				
+				let folders = {};
+
+				for (var i = 0; i < config.categories.length; i++) {
+                    let cat = config.categories[i]
+					folders[cat.label] = gui.addFolder(cat.label);
+					for (var j = 0; j < cat.fields.length; j++) {
+						let fieldDef = cat.fields[j];
+                        params[fieldDef.ref] = fieldDef.value;
+
+						let field;
+						if (fieldDef.hasOwnProperty('min')) {
+							let step = 1;
+							if (fieldDef.hasOwnProperty('step'))
+								step = fieldDef.step;
+
+							let min = fieldDef.min;
+							let max = fieldDef.max;
+
+							if (fieldDef.ref == "indexOffset") {
+								min = - partInfo.width / 2;
+								max = -min;
+								params[fieldDef.ref] = 0;
+							} else if (fieldDef.ref == "scanOffset") {
+								min = - partInfo.length / 2;
+                                max = -min;
+                                params[fieldDef.ref] = 0;
+                            }
+							field = folders[cat.label].add(params, fieldDef.ref, min, max).step(step);
+						} else if (fieldDef.hasOwnProperty('options')) {
+                            field = folders[cat.label].add(params, fieldDef.ref, fieldDef.options);
+						}
+						field.name(fieldDef.label);
+
+                        if (fieldDef.ref == "partWidth" || fieldDef.ref == "partLength" || fieldDef.ref == "partHeight") {
+							field.onChange(function () {
+								updatePart();
+							});
+                        } else if (fieldDef.ref.startsWith("probe")) {
+                            field.onChange(function () {
+                                updateProbes();
+                            });
+                        }
+						else if (fieldDef.ref == "startAngle" || fieldDef.ref == "stopAngle") {
+                            field.onChange(function () {
+								setAngle();
+							});
+						} else if (fieldDef.ref == "scanOffset" || fieldDef.ref == "indexOffset") {
+							field.onChange(function () {
+								updateProbePos();
+							});
+						} else if (fieldDef.ref == "probe") {
+							probeHtmlElement = field.domElement;
+							$($(probeHtmlElement).children("select")[0]).attr("disabled", true);
+							field.onChange(function () {
+								changeProbe();
+                            });
+                        } else if (fieldDef.ref == "numProbes") {
+							field.onChange(function () {
+								setNumProbes();
+                            });
+                        } else if (fieldDef.ref == "skew") {
+                            field.onChange(function () {
+                                setSkew();
+                            });
+						}
+
+						guiFields[fieldDef.ref] = field;
+					}
+					folders[cat.label].open();
+                    
+				}
+
+                gui.width = 400;
+				gui.open();
+
+				setAngle();
+				setProbePos();
+			}
+
+			function setCameraTop() {
+				
+                cameras[s3di].position.set(0, 10, 0);
+                cameras[s3di].zoom = 1;
+                controls3d.update();
+				cameras[s3di].updateProjectionMatrix();
+				$("#btnTop").addClass("ui-active");
+				$("#btnSide").removeClass("ui-active");
+                $("#btnFront").removeClass("ui-active");
+                render();
+			}
+
+			window.moveCamera = function (pos) {
+				if (pos == "top") {
+					setCameraTop();
+                } else if (pos == "front") {
+					cameras[s3di].position.set(10, 0, 0);
+                    cameras[s3di].zoom = 1;
+					controls3d.update();
+					cameras[s3di].updateProjectionMatrix();
+                    $("#btnTop").removeClass("ui-active");
+                    $("#btnSide").removeClass("ui-active");
+                    $("#btnFront").addClass("ui-active");
+                    render();
+                }
+				else if (pos == "side") {
+					cameras[s3di].position.set(0, 0, 10);
+                    cameras[s3di].zoom = 1;
+					controls3d.update();
+					cameras[s3di].updateProjectionMatrix();
+                    $("#btnTop").removeClass("ui-active");
+                    $("#btnSide").addClass("ui-active");
+                    $("#btnFront").removeClass("ui-active");
+					render();
+				}
+			}
+
+			function init() {
+
+				/*var request = new XMLHttpRequest();
+				request.open('GET', "https://192.168.2.19:8000/exercises/scanplan/100.json", true);
+				request.responseType = 'blob';
+				request.onload = function() {
+					var reader = new FileReader();
+					reader.readAsText(request.response);
+					reader.onload =  function(e){
+						config = $.parseJSON(e.target.result);
+
+                        loadGui();
+					};
+				};
+				request.send();*/
+				
+				containers[s3di] = document.getElementById( 'div3d' );
+				containers[s2di] = document.getElementById( 'div2d' );
+
+				scenes[s2di] = new THREE.Scene();
+				scenes[s2di].background = new THREE.Color( 0xffffff );
+
+				scenes[s3di] = new THREE.Scene();
+				scenes[s3di].background = new THREE.Color( 0xdddddd );
+
+				const width = window.innerWidth;
+				const height = (window.innerHeight/2);
+				const frustumSize = 3;
+				const aspect = window.innerWidth / (window.innerHeight/2);
+
+				cameras[s3di] = new THREE.OrthographicCamera( frustumSize * aspect / - 2, frustumSize * aspect / 2, frustumSize / 2, frustumSize / - 2, 1, 2000 );
+				cameras[s3di].position.set( 0, 0, 10 );
+				
+				scenes[s3di].add( cameras[s3di] );
+				
+				cameras[s2di] = new THREE.OrthographicCamera( frustumSize * aspect / - 2, frustumSize * aspect / 2, frustumSize / 2, frustumSize / - 2, 1, 2000 );
+				cameras[s2di].position.set( 0, 0, 10 );
+				
+				scenes[s2di].add(cameras[s2di]);
+
+				/*let pMatMask = new THREE.MeshBasicMaterial( { color: 0xffffff, opacity: 1.0, transparent: false } );
+				let pGeoMask = new THREE.PlaneGeometry(10,2,1,1);
+				let mask = new THREE.Mesh(pGeoMask,pMatMask);
+				mask.position.set(boxWidth + 2.001,0,5);
+				scenes[s2di].add(mask);*/
+				
+				const shape = new THREE.Shape()
+					.moveTo( -1.8, partSceneInfo.halfHeight )
+					.lineTo( 0, -partSceneInfo.halfHeight )
+					.lineTo( 1.8, -partSceneInfo.halfHeight )
+					.lineTo( -1.7, partSceneInfo.halfHeight )
+					.lineTo( -1.8, partSceneInfo.halfHeight );
+					
+				let geometry = new THREE.ShapeGeometry( shape );
+
+				scanArea1 = new THREE.Mesh( geometry, new THREE.MeshBasicMaterial( { color: 0xff0000, opacity: 0.3, transparent: true, side: THREE.DoubleSide } ) );
+				scanArea1.position.set( 0, 0, 1 );
+				//scenes[s2di].add( scanArea1 );
+				
+				const shape2 = new THREE.Shape()
+					.moveTo( 0, partSceneInfo.halfHeight )
+					.lineTo( -1, -partSceneInfo.halfHeight )
+					.lineTo( 1, -partSceneInfo.halfHeight )
+					.lineTo( 1.8, partSceneInfo.halfHeight )
+					.lineTo( 0, partSceneInfo.halfHeight );
+					
+				let geometry2 = new THREE.ShapeGeometry( shape2 );
+
+				scanArea2 = new THREE.Mesh( geometry2, new THREE.MeshBasicMaterial( { color: 0xff0000, opacity: 0.3, transparent: true, side: THREE.DoubleSide } ) );
+				scanArea2.position.set( 0, 0, 1 );
+				//scenes[s2di].add( scanArea2 );
+				
+				const points = shape.getPoints();
+				const geometryPoints = new THREE.BufferGeometry().setFromPoints( points );
+
+				scanLine1 = new THREE.Line( geometryPoints, new THREE.LineBasicMaterial( { color: 0xff0000 } ) );
+				scanLine1.position.set( 0, 0, 2 );
+				//scenes[s2di].add( scanLine1 );
+				
+				const points2 = shape2.getPoints();
+				const geometryPoints2 = new THREE.BufferGeometry().setFromPoints( points2 );
+
+				scanLine2 = new THREE.Line( geometryPoints2, new THREE.LineBasicMaterial( { color: 0xff0000 } ) );
+				scanLine2.position.set( 0, 0, 2 );
+				//scenes[s2di].add( scanLine2 );
+
+				for (var i = 0; i < scenes.length; i++) {
+                    renderers[i] = new THREE.WebGLRenderer({ antialias: true });
+                    renderers[i].autoClear = true;
+                    renderers[i].setPixelRatio(window.devicePixelRatio);
+                    renderers[i].setSize(width, height);
+                    containers[i].appendChild(renderers[i].domElement);
+				}
+				
+				window.addEventListener( 'resize', onWindowResize );
+
+				controls3d = new OrbitControls(cameras[s3di], renderers[s3di].domElement);
+				controls3d.addEventListener('change', changeControls3d);
+
+                var json = '{ "categories": [ { "label": "Part Info", "fields": [ { "label": "Width (mm)", "min": 10, "max": 1000, "step":2, "value": 300, "ref": "partWidth" },{ "label": "Length (mm)", "min": 10, "max": 1000, "step":2, "value": 200, "ref": "partLength" },{ "label": "Height (mm)", "min": 5, "max": 50, "step":1, "value": 28, "ref": "partHeight" }]}, { "label": "Probe Info", "fields": [ { "label": "Wedge Angle (º)", "min": 25, "max": 80, "step":0.1, "value": 36.1, "ref": "probeAngle" },{ "label": "Wedge Offset X (mm)", "min": 0, "max": 72.99, "step":0.1, "value": 70.26, "ref": "probeX" },{ "label": "Wedge Offset Y", "min": 0, "max": 46, "step":0.1, "value": 23, "ref": "probeY" },{ "label": "Wedge Offset Z", "min": 0, "max": 44.7, "step":0.1, "value": 17.23, "ref": "probeZ" },{ "label": "Wedge Length (mm)", "min": 10, "max": 100, "step":0.1, "value": 72.99, "ref": "probeL" },{ "label": "Wedge Width (mm)", "min": 10, "max": 100, "step":0.1, "value": 46, "ref": "probeW" },{ "label": "Wedge Height (mm)", "min": 10, "max": 100, "step":0.1, "value": 44.7, "ref": "probeH" }]}, { "label": "Hardware & position", "fields": [ { "label": "Number of probes", "min": 1, "max": 2, "value": 1, "ref": "numProbes" }, { "label": "Probe", "options": [ "1", "2" ], "value": "1", "ref": "probe" }, { "label": "Skew (º)", "options": [ "0", "90", "180", "270" ], "value": "90", "ref": "skew" }, { "label": "Scan offset (mm)", "min": 0, "max": 9000, "value": 0, "ref": "scanOffset" }, { "label": "Index offset (mm)", "min": 0, "max": 100, "value": 15, "step": 0.5, "ref": "indexOffset" } ] }, { "label": "Scan", "fields": [ { "label": "Scan", "options": [ "1", "2" ], "value": "1", "ref": "scan" }, { "label": "Wave type", "options": [ "Shear", "Longitudinal" ], "value": "Shear", "ref": "waveType" }, { "label": "Type of Scan", "options": [ "L-Scan", "S-Scan" ], "value": "S-Scan", "ref": "typeScan" }, { "label": "Pulser", "min": 1, "max": 32, "value": 1, "ref": "pulser" }, { "label": "First element", "min": 1, "max": 32, "value": 12, "ref": "firstElement" }, { "label": "Number of elements", "min": 1, "max": 32, "value": 16, "ref": "numElements" }, { "label": "Start Angle (º)", "min": -90, "max": 90, "ref": "startAngle", "value": 35 }, { "label": "Stop Angle (º)", "min": -90, "max": 90, "ref": "stopAngle", "value": 70 }, { "label": "Angular resolution", "min": 0.1, "max": 5, "value": 1, "step": 0.1, "ref": "angularResolution" }, { "label": "Focus depth (mm)", "min": 0, "max": 1000, "value": 25, "ref": "focusDepth" } ] }, { "label": "UT settings", "fields": [ { "label": "Gain (dB)", "min": 0, "max": 100, "value": 10, "step": 0.5, "ref": "gain" }, { "label": "Start UT range (mm)", "min": 0, "max": 1000, "value": 10, "step": 1, "ref": "startUtRange" }, { "label": "Range UT range (mm)", "min": 1, "max": 1000, "value": 40, "step": 1, "ref": "rangeUtRange" }, { "label": "Energy (V)", "min": 50, "max": 200, "value": 100, "step": 50, "ref": "energy" }, { "label": "PRF (scan/s)", "min": 1, "max": 1000, "value": 100, "step": 1, "ref": "prf" }, { "label": "Filter (MHz)", "min": 0.5, "max": 20, "value": 5, "step": 0.25, "ref": "filter" }, { "label": "Video filter", "options": [ "On", "Off" ], "value": "Off", "ref": "videoFilter" }, { "label": "Reject (%)", "min": 0, "max": 100, "value": 0, "step": 1, "ref": "reject" }, { "label": "Point quantity", "min": 100, "max": 9000, "value": 0, "step": 100, "ref": "pointQuantity" } ] }, { "label": "Scanner settings", "fields": [ { "label": "Scan resolution (mm)", "min": 0.5, "max": 10, "value": 1, "step": 0.5, "ref": "scanResolution" }, { "label": "Start (mm)", "min": 0, "max": 10000, "value": 1, "step": 1, "ref": "start" }, { "label": "Stop (mm)", "min": 1, "max": 10000, "value": 300, "step": 1, "ref": "stop" } ] } ]}';
+
+                config = $.parseJSON(json);
+
+                loadGui();
+
+				updatePart();
+
+				updateProbes();
+
+				setCameraTop();
+
+				onWindowResize();
+			}
+			function changeControls3d() {
+                $("#btnTop").removeClass("ui-active");
+                $("#btnSide").removeClass("ui-active");
+				$("#btnFront").removeClass("ui-active");
+
+				render();
+			}
+
+			function setUnselected(obj, unselected) {
+				if (!obj == null) return;
+
+				if (obj.children) {
+					obj.children.forEach((child) => {
+						setUnselected(child, unselected);
+					});
+                }
+				if (obj.material) {
+                    if (unselected) {
+						if (obj.material.transparent) {
+							obj.material.opacity = 0.3;
+						}
+					}
+					else {
+                        if (obj.material.transparent) { 
+							obj.material.opacity = 1.0;
+						}
+					}
+                };
+
+			}
+
+			function drawProbe() {
+
+                let xMin = - probeSceneInfo.halfWidth;
+				let xMax = -xMin;
+				let xMid = xMax - probeSceneInfo.slopeWidth;
+
+				if (xMid > xMax)
+					xMid = xMax;
+                if (xMid < xMin)
+                    xMid = xMin;
+
+				let yMax = probeSceneInfo.halfHeight;
+				let yMin = -yMax;
+				let yMid = yMin + probeSceneInfo.slopeHeight;
+
+                if (yMid > yMax)
+					yMid = yMax;
+                if (yMid < yMin)
+                    yMid = yMin;
+
+                var pi = Math.PI;
+                var angleInRad = 90 * (pi / 180);
+
+				let angleProbe = angleInRad - ( Math.atan((xMid - xMin) / (yMax - yMid)) );
+
+                const pts = [];
+
+				var group = new THREE.Group();
+				pts.push(new THREE.Vector2(xMin, yMin));
+				pts.push(new THREE.Vector2(xMin, yMid));
+				pts.push(new THREE.Vector2(xMid, yMax));
+				pts.push(new THREE.Vector2(xMax, yMin));
+
+				const shape = new THREE.Shape(pts);
+
+                const pts2 = [];
+
+                pts2.push(new THREE.Vector2(xMid, yMax));
+                pts2.push(new THREE.Vector2(xMax, yMax));
+                pts2.push(new THREE.Vector2(xMax, yMin));
+
+                const shape2 = new THREE.Shape(pts2);
+
+                const extrudeSettings = { depth: probeSceneInfo.length, bevelEnabled: false, bevelSegments: 0, steps: 2, bevelSize: 0, bevelThickness: 0 };
+
+				var probeBoxColorMat = new THREE.MeshBasicMaterial({ color: 0x80DF80, transparent: true });
+				
+				var probeGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+
+				var probeMesh = new THREE.Mesh(probeGeo, probeBoxColorMat);
+                probeMesh.position.set(0, 0, -probeSceneInfo.halfLength);
+
+                var geoLines = new THREE.EdgesGeometry(probeMesh.geometry); 
+                var matLines = new THREE.LineBasicMaterial({ color: 0x3B783B, transparent: true });
+                var wireframe = new THREE.LineSegments(geoLines, matLines);
+				probeMesh.add(wireframe);
+				group.add(probeMesh);
+
+                var probeBoxColorMat2 = new THREE.MeshBasicMaterial({ color: 0x40CF40, transparent: true });
+                var probeGeo2 = new THREE.ExtrudeGeometry(shape2, extrudeSettings);
+
+				var probeMesh2 = new THREE.Mesh(probeGeo2, probeBoxColorMat2);
+                probeMesh2.position.set(0, 0, -probeSceneInfo.halfLength);
+
+                var geoLines2 = new THREE.EdgesGeometry(probeMesh2.geometry); 
+                var wireframe2 = new THREE.LineSegments(geoLines2, matLines);
+                probeMesh2.add(wireframe2);
+                group.add(probeMesh2);
+
+				/*
+				let elementWidth = 0.02;
+				let elementHeight = 0.06;
+                let elementLength = probeSceneInfo.halfLength;
+				let numElements = 32;
+				let elementGroupWidth = numElements * elementWidth;
+				let elementGroupStartX = - (elementGroupWidth / 2);
+
+				var elementGroup = new THREE.Group();
+
+				for (var i = 0; i < numElements; i++) {
+                    var elementGeo = new THREE.BoxGeometry(elementWidth, elementHeight, elementLength);
+                    var elementColorMat = new THREE.MeshBasicMaterial({ color: 0xcccccc, transparent: true });
+					var elementMesh = new THREE.Mesh(elementGeo, elementColorMat);
+					var elementPosX = elementGroupStartX + (i * elementWidth);
+                    elementMesh.translateX(elementPosX);
+                    var geoElementLines = new THREE.EdgesGeometry(elementMesh.geometry);
+                    var elementWireframe = new THREE.LineSegments(geoElementLines, matLines);
+                    elementMesh.add(elementWireframe);
+                    elementGroup.add(elementMesh);
+				}
+				//elementGroup.translateX(-(elementGroupWidth / 2) - (xMax - xMid));
+				elementGroup.position.setX(-(xMid - xMin) / 2);
+				elementGroup.translateX(0.15);
+				elementGroup.position.setY((yMax - xMid) / 2);
+                elementGroup.translateY(0.025);
+				//elementGroup.translateY(boxHeight * 2);
+				elementGroup.rotateZ(angleProbe);
+                group.add(elementGroup);
+				*/
+				group.position.set(0, ((probeSceneInfo.height - partSceneInfo.height) / 2) + partSceneInfo.height, 0);
+
+				return group;
+				
+			}
+			function setNumProbes() {
+				for (var i = 0; i<probes.length; i++) {
+					probes[i].groups[s2di].visible = probes[i].groups[s3di].visible = (i + 1) <= params.numProbes;
+				}
+				//probeGroup2d2.visible = probeGroup3d2.visible = params.numProbes == 2;
+				if (params.numProbes == 1) {
+					$($(probeHtmlElement).children("select")[0]).attr("disabled", true);
+					if (params.probe == 2) {
+						params.probe = 1;
+						changeProbe();
+					}
+				} else {
+                    $($(probeHtmlElement).children("select")[0]).attr("disabled", false);
+				}
+                setProbePos();
+			}
+
+			function changeProbe() {
+                params.indexOffset = probes[params.probe - 1].indexOffset;
+                params.scanOffset = probes[params.probe - 1].scanOffset;
+				params.skew = probes[params.probe - 1].skew;
+
+				for (var i = 0; i < probes.length; i++) {
+					for (var j = 0; j < probes[i].groups.length; j++) {
+						var unselected = (i + 1) != params.probe;
+						setUnselected(probes[i].groups[j], unselected);
+					}
+				}
+
+				render();
+                gui.updateDisplay();
+			}
+
+			function updateProbePos() {
+				probes[params.probe - 1].indexOffset = params.indexOffset;
+				probes[params.probe - 1].scanOffset = params.scanOffset;
+
+				setProbePos();
+			}
+
+            function setSkew() {
+                probes[params.probe - 1].skew = params.skew;
+
+                setProbePos();
+            }
+
+			function setProbePos() {
+
+				for (var i = 0; i < probes.length; i++) {
+                    let degrees = probes[i].skew - 90;
+                    let radians = degrees * (Math.PI / 180);
+
+                    let xDiff = toSceneUnits(probes[i].indexOffset);
+					if (degrees == 0)
+						xDiff -= probeSceneInfo.halfWidth;
+                    else if (degrees == 180)
+                        xDiff += probeSceneInfo.halfWidth;
+
+                    let zDiff = toSceneUnits(probes[i].scanOffset);
+                    if (degrees == -90)
+                        zDiff -= probeSceneInfo.halfWidth;
+                    else if (degrees == 90)
+                        zDiff += probeSceneInfo.halfWidth;
+
+					for (var j = 0; j < probes[i].groups.length; j++) {
+                        probes[i].groups[j].rotation.y = radians;
+                        probes[i].groups[j].position.setX(xDiff);
+                        probes[i].groups[j].position.setZ(zDiff);
+                    }
+
+				}
+				render();
+			}
+
+			function updateProbes() {
+
+				probeInfo.angle = toRadians(params.probeAngle);
+				probeInfo.H = params.probeH;
+                probeInfo.W = params.probeW;
+				probeInfo.L = params.probeL;
+				probeInfo.X = params.probeX;
+				probeInfo.Y = params.probeY;
+				probeInfo.Z = params.probeZ;
+
+				guiFields["probeX"].max(params.probeL);
+				guiFields["probeY"].max(params.probeW);
+				guiFields["probeZ"].max(params.probeH);
+
+                if (params.probeX > params.probeL)
+					params.probeX = params.probeL;
+                if (params.probeY > params.probeW)
+					params.probeY = params.probeW;
+                if (params.probeZ > params.probeH)
+                    params.probeZ = params.probeH;
+
+                probeInfo.angle2 = toRadians(90) - probeInfo.angle;
+                probeInfo.sH = probeInfo.Z - ((probeInfo.L - probeInfo.X) * Math.tan(probeInfo.angle));
+                probeInfo.sW = probeInfo.L - ((probeInfo.H - probeInfo.sH) * Math.tan(probeInfo.angle2));
+                probeSceneInfo = {
+                    width: toSceneUnits(probeInfo.L),
+                    height: toSceneUnits(probeInfo.H),
+                    length: toSceneUnits(probeInfo.W),
+                    halfWidth: toSceneUnits(probeInfo.L) / 2,
+                    halfHeight: toSceneUnits(probeInfo.H) / 2,
+                    halfLength: toSceneUnits(probeInfo.W) / 2,
+                    slopeHeight: toSceneUnits(probeInfo.sH),
+                    slopeWidth: toSceneUnits(probeInfo.sW)
+				};
+
+				gui.updateDisplay();
+
+				for (var i = 0; i < probes.length; i++) {
+					for (var j = 0; j < probes[i].groups.length; j++) {
+                        while (probes[i].groups[j].children.length > 0) {
+                            probes[i].groups[j].remove(probes[i].groups[j].children[0]);
+						}
+                        scenes[j].remove(probes[i].groups[j]);
+					}
+
+				}
+                
+
+                for (var i = 0; i < probes.length; i++) {
+                    probes[i].groups[s2di] = drawProbe();
+                    probes[i].groups[s3di] = drawProbe();
+
+                    scenes[s2di].add(probes[i].groups[s2di]);
+                    scenes[s3di].add(probes[i].groups[s3di]);
+
+                    if (i > 0) {
+                        probes[i].groups[s2di].visible = false;
+                        probes[i].groups[s3di].visible = false;
+
+                        setUnselected(probes[i].groups[s2di], true);
+                        setUnselected(probes[i].groups[s3di], true);
+                    }
+				}
+
+				updateProbePos();
+			}
+
+			function updatePart() {
+				var half = (params.partWidth / 2);
+				guiFields["indexOffset"].min(-half);
+				guiFields["indexOffset"].max(half);
+
+				if (params.indexOffset < - half)
+					params.indexOffset = -half;
+                if (params.indexOffset > half)
+					params.indexOffset = half;
+
+				partInfo.width = params.partWidth;
+
+                var halfL = (params.partLength / 2);
+                guiFields["scanOffset"].min(-halfL);
+                guiFields["scanOffset"].max(halfL);
+
+                if (params.scanOffset < - halfL)
+                    params.scanOffset = -halfL;
+                if (params.scanOffset > halfL)
+                    params.scanOffset = halfL;
+
+				partInfo.length = params.partLength;
+
+				partInfo.height = params.partHeight;
+
+				gui.updateDisplay();
+
+                partSceneInfo = {
+                    width: toSceneUnits(partInfo.width),
+                    length: toSceneUnits(partInfo.length),
+                    height: toSceneUnits(partInfo.height),
+                    halfWidth: toSceneUnits(partInfo.width) / 2,
+                    halfHeight: toSceneUnits(partInfo.height) / 2,
+                    halfLength: toSceneUnits(partInfo.length) / 2
+                };
+
+                createPart(scenes[s3di]);
+				createPart(scenes[s2di]);
+
+				updateProbes();
+
+				render();
+			}
+			
+			function setAngle() {
+			/*
+				let radians = params.startAngle * Math.PI/180;
+				var tan = Math.tan(radians);
+				var adj = boxHeight;
+				var opp = tan * adj;
+
+				scanArea1.geometry.attributes.position.array[ 9 ] = -1.8 + opp;
+				scanLine1.geometry.attributes.position.array[ 3 ] = -1.8 + opp;
+				
+				scanArea2.geometry.attributes.position.array[ 9 ] = -1.8 + opp;
+				scanArea2.geometry.attributes.position.array[ 0 ] = -1.8 + (opp*2);
+				
+				scanLine2.geometry.attributes.position.array[ 3 ] = -1.8 + opp;
+				scanLine2.geometry.attributes.position.array[ 0 ] = -1.8 + (opp*2);
+				scanLine2.geometry.attributes.position.array[ 12 ] = -1.8 + (opp*2);
+				
+				let radiansStop = params.stopAngle * Math.PI/180;
+				var tanStop = Math.tan(radiansStop);
+				var adjStop = boxHeight;
+				var oppStop = tanStop * adjStop;
+				
+				scanArea1.geometry.attributes.position.array[ 6 ] = -1.7 + oppStop;
+				scanLine1.geometry.attributes.position.array[ 6 ] = -1.7 + oppStop;
+				
+				scanArea2.geometry.attributes.position.array[ 6 ] = -1.7 + oppStop;
+				scanArea2.geometry.attributes.position.array[ 3 ] = -1.7 + (oppStop*2);
+				
+				scanLine2.geometry.attributes.position.array[ 6 ] = -1.7 + oppStop;
+				scanLine2.geometry.attributes.position.array[ 9 ] = -1.7 + (oppStop*2);
+				
+				scanArea1.geometry.attributes.position.needsUpdate = true;
+				scanArea2.geometry.attributes.position.needsUpdate = true;
+				scanLine1.geometry.attributes.position.needsUpdate = true;
+				scanLine2.geometry.attributes.position.needsUpdate = true;
+				render();
+				*/
+			}
+			
+			function createPart(scene) {
+
+				for (var i = 0; i < scene.children.length; i++) {
+					if (scene.children[i].name.startsWith("partobject")) {
+						console.log("removed " + scene.children[i].name);
+						scene.remove(scene.children[i]);
+						i--;
+                    }
+				}
+			
+				const boxMat = new THREE.LineBasicMaterial( { color: 0x0000ff } );
+				const points = [];
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( partSceneInfo.halfWidth, partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( partSceneInfo.halfWidth, -partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, -partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, -partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, -partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( partSceneInfo.halfWidth, partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( partSceneInfo.halfWidth, -partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, -partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( -partSceneInfo.halfWidth, partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				
+				points.push( new THREE.Vector3( partSceneInfo.halfWidth, partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( partSceneInfo.halfWidth, -partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( partSceneInfo.halfWidth, -partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( partSceneInfo.halfWidth, partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				points.push( new THREE.Vector3( partSceneInfo.halfWidth, partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+
+				var prismWidth = partSceneInfo.width * 0.05;
+			
+				const prismMat = new THREE.LineBasicMaterial( { color: 0x0000ff } );
+				const prismPoints = [];
+				prismPoints.push( new THREE.Vector3( -(prismWidth/2.0), partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				prismPoints.push( new THREE.Vector3( 0, -partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				prismPoints.push( new THREE.Vector3( (prismWidth/2.0), partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				prismPoints.push( new THREE.Vector3( -(prismWidth/2.0), partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				
+				prismPoints.push( new THREE.Vector3( -(prismWidth/2.0), partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				prismPoints.push( new THREE.Vector3( 0, -partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				prismPoints.push( new THREE.Vector3( (prismWidth/2.0), partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				prismPoints.push( new THREE.Vector3( (prismWidth/2.0), partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				
+				prismPoints.push( new THREE.Vector3( 0, -partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				prismPoints.push( new THREE.Vector3( 0, -partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				
+				const geometry = new THREE.BufferGeometry().setFromPoints( points );
+				const box = new THREE.Line(geometry, boxMat);
+				box.name = "partobject_box";
+				scene.add( box );
+				
+				const prismGeometry = new THREE.BufferGeometry().setFromPoints( prismPoints );
+				const prism = new THREE.Line( prismGeometry, prismMat );
+                prism.name = "partobject_prism";
+				scene.add(prism);
+				
+				const middleLineMat = new THREE.LineBasicMaterial( { color: 0xff0000 } );
+				const middleLinePoints = [];
+				middleLinePoints.push( new THREE.Vector3( 0, partSceneInfo.halfHeight, -partSceneInfo.halfLength ) );
+				middleLinePoints.push( new THREE.Vector3( 0, partSceneInfo.halfHeight, partSceneInfo.halfLength ) );
+				
+				const middleLineGeometry = new THREE.BufferGeometry().setFromPoints( middleLinePoints );
+				const middleLine = new THREE.Line(middleLineGeometry, middleLineMat);
+				middleLine.name = "partobject_middleLine";
+				scene.add(middleLine);
+			}
+		
+
+			function onWindowResize() {
+
+                const width = window.innerWidth - 400;
+				const height2d = (window.innerHeight * 0.35);
+                const height3d = (window.innerHeight * 0.65);
+
+
+				const aspect2d = width / height2d;
+                const aspect3d = width / height3d;
+                const frustumSize2d = 3.5;
+				const frustumSize3d = 6.5;
+				
+
+				cameras[s3di].left = frustumSize3d * aspect3d / - 2;
+                cameras[s3di].right = frustumSize3d * aspect3d / 2;
+                cameras[s3di].top = frustumSize3d / 2;
+                cameras[s3di].bottom = frustumSize3d / - 2;
+				cameras[s3di].updateProjectionMatrix();
+			
+				cameras[s2di].left = frustumSize2d * aspect2d / - 2;
+                cameras[s2di].right = frustumSize2d * aspect2d / 2;
+                cameras[s2di].top = frustumSize2d / 2;
+                cameras[s2di].bottom = frustumSize2d / - 2;
+				cameras[s2di].updateProjectionMatrix();
+
+				renderers[s3di].setSize(width, height3d);
+				renderers[s2di].setSize(width, height2d);
+				
+				render();
+
+				$('#divOverlay3d').css('top', height2d + 'px');
+
+			}
+			
+			function render() {
+				for (var i = 0; i < scenes.length; i++) {
+                    renderers[i].render(scenes[i], cameras[i]);
+				}
+				
+			}
+
+
+		</script>
+
+	</body>
+</html>
